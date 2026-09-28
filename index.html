@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather Now</title>
+<style>
+  /* Colors live in variables so JavaScript can change the whole mood at once */
+  :root { --top: #4a90d9; --bottom: #a6d1f5; --ink: #10233a; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; padding: 24px 16px;
+    font-family: Georgia, "Times New Roman", serif; color: var(--ink);
+    background: linear-gradient(var(--top), var(--bottom)) fixed;
+    transition: background .6s;
+  }
+  main { max-width: 480px; margin: 0 auto; }
+  form { display: flex; gap: 8px; }
+  input, button { font: inherit; padding: 12px 14px; border-radius: 10px; border: 0; }
+  input { flex: 1; min-width: 0; }
+  button { background: var(--ink); color: #fff; cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+  #status { min-height: 1.5em; margin: 12px 4px; }
+  #now { padding: 24px 4px; }
+  #city { font-size: 1.3rem; margin: 0; }
+  #temp { font-size: 6rem; line-height: 1; margin: 4px 0; }
+  #desc { font-size: 1.4rem; margin: 0 0 8px; }
+  #details { display: flex; gap: 20px; flex-wrap: wrap; margin: 0; }
+  #details div { min-width: 90px; }
+  #details dt { font-size: .85rem; opacity: .75; }
+  #details dd { margin: 0; font-size: 1.1rem; }
+  #forecast { list-style: none; padding: 0; margin: 16px 0; }
+  #forecast li {
+    display: flex; justify-content: space-between; padding: 12px 4px;
+    border-top: 1px solid rgba(16,35,58,.25);
+  }
+  #units { background: transparent; color: var(--ink); border: 1px solid var(--ink); padding: 6px 12px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <form id="search">
+    <input id="query" type="text" placeholder="Search for a city" aria-label="City name" required>
+    <button type="submit">Search</button>
+  </form>
+  <p id="status" role="status">Type a city to see its weather.</p>
+
+  <section id="weather" class="hidden">
+    <div id="now">
+      <h1 id="city"></h1>
+      <p id="temp"></p>
+      <p id="desc"></p>
+      <dl id="details"></dl>
+    </div>
+    <ul id="forecast"></ul>
+    <button id="units" type="button">Switch to °F</button>
+  </section>
+</main>
+
+<script>
+/* STEP 1: A lookup table. The API gives weather as a number code;
+   we translate it into words and pick a sky color. */
+const WEATHER = {
+  0: ["Clear sky", "clear"], 1: ["Mostly clear", "clear"], 2: ["Partly cloudy", "cloud"],
+  3: ["Overcast", "cloud"], 45: ["Fog", "cloud"], 48: ["Freezing fog", "cloud"],
+  51: ["Light drizzle", "rain"], 53: ["Drizzle", "rain"], 55: ["Heavy drizzle", "rain"],
+  61: ["Light rain", "rain"], 63: ["Rain", "rain"], 65: ["Heavy rain", "rain"],
+  71: ["Light snow", "snow"], 73: ["Snow", "snow"], 75: ["Heavy snow", "snow"],
+  80: ["Rain showers", "rain"], 81: ["Rain showers", "rain"], 82: ["Violent showers", "rain"],
+  95: ["Thunderstorm", "rain"], 96: ["Thunderstorm with hail", "rain"], 99: ["Thunderstorm with hail", "rain"]
+};
+const SKIES = {            // [top color, bottom color]
+  clear: ["#3f8fe0", "#ffd98a"], cloud: ["#7e8ea3", "#c9d3df"],
+  rain: ["#4b5b70", "#8fa3b8"], snow: ["#aebfd3", "#f2f6fa"], night: ["#0f1e3d", "#3a4f7a"]
+};
+
+/* STEP 2: Grab the page elements we need to update */
+const $ = id => document.getElementById(id);
+let data = null;        // last weather result, kept so the unit toggle can redraw
+let useF = false;       // false = Celsius
+
+/* STEP 3: Search flow. "async/await" lets us wait for the internet without freezing the page. */
+$("search").addEventListener("submit", async event => {
+  event.preventDefault();                       // stop the form from reloading the page
+  const name = $("query").value.trim();
+  $("status").textContent = "Loading…";
+  try {
+    // 3a. Turn the city name into coordinates (geocoding)
+    const geoRes = await fetch(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=1`);
+    const geo = await geoRes.json();
+    if (!geo.results) { $("status").textContent = `No city found for "${name}". Check the spelling.`; return; }
+    const place = geo.results[0];
+
+    // 3b. Ask for the weather at those coordinates
+    const url = "https://api.open-meteo.com/v1/forecast"
+      + `?latitude=${place.latitude}&longitude=${place.longitude}`
+      + "&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code,is_day"
+      + "&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto";
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Weather service error");
+    data = { place, ...(await res.json()) };
+
+    $("status").textContent = "";
+    render();
+  } catch (err) {
+    $("status").textContent = "Couldn't load the weather. Check your connection and try again.";
+  }
+});
+
+/* STEP 4: Unit toggle. Convert only when displaying; keep the original data in Celsius. */
+$("units").addEventListener("click", () => {
+  useF = !useF;
+  $("units").textContent = useF ? "Switch to °C" : "Switch to °F";
+  render();
+});
+const showTemp = c => Math.round(useF ? c * 9 / 5 + 32 : c) + "°";
+
+/* STEP 5: Draw the data onto the page */
+function render() {
+  const cur = data.current;
+  const [label, sky] = WEATHER[cur.weather_code] || ["Unknown", "cloud"];
+  const [top, bottom] = cur.is_day ? SKIES[sky] : SKIES.night;
+
+  document.documentElement.style.setProperty("--top", top);
+  document.documentElement.style.setProperty("--bottom", bottom);
+  // On dark night skies, switch the text to white so it stays readable
+  document.documentElement.style.setProperty("--ink", cur.is_day ? "#10233a" : "#f3f6fb");
+
+  $("city").textContent = `${data.place.name}, ${data.place.country || ""}`;
+  $("temp").textContent = showTemp(cur.temperature_2m);
+  $("desc").textContent = label;
+  $("details").innerHTML = `
+    <div><dt>Feels like</dt><dd>${showTemp(cur.apparent_temperature)}</dd></div>
+    <div><dt>Humidity</dt><dd>${cur.relative_humidity_2m}%</dd></div>
+    <div><dt>Wind</dt><dd>${Math.round(cur.wind_speed_10m)} km/h</dd></div>`;
+
+  // Loop over the next 5 days and build one list row for each
+  const d = data.daily;
+  $("forecast").innerHTML = d.time.slice(1, 6).map((date, i) => {
+    const day = new Date(date + "T12:00").toLocaleDateString("en", { weekday: "long" });
+    const text = (WEATHER[d.weather_code[i + 1]] || ["Unknown"])[0];
+    return `<li><span>${day}: ${text}</span>
+            <span>${showTemp(d.temperature_2m_max[i + 1])} / ${showTemp(d.temperature_2m_min[i + 1])}</span></li>`;
+  }).join("");
+
+  $("weather").classList.remove("hidden");
+}
+</script>
+</body>
+</html>
